@@ -1,0 +1,13 @@
+{
+    "experimentalServices": {
+        "frontend": {
+            "entrypoint": "path/to/frontend",
+            "routePrefix": "/"
+        },
+        "backend": {
+            "entrypoint": "path/to/backend/src/app.js",
+            "routePrefix": "/api",
+            "framework": "express"
+        }
+    }
+}
