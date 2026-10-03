@@ -28,17 +28,19 @@ const allowedOrigins = (process.env.CLIENT_ORIGIN || 'http://localhost:3000')
 app.use(
   cors({
     origin: function (origin, callback) {
+      // Allow requests with no origin (server-to-server, curl, Next.js rewrite proxy)
       if (!origin) return callback(null, true);
       if (allowedOrigins.includes(origin) || allowedOrigins.includes('*')) {
         return callback(null, true);
       }
-      return callback(new Error(`CORS blocked for origin: ${origin}`));
+      // Do NOT throw — just reject
+      return callback(null, false);
     },
     credentials: true,
   })
 );
 
-// Ensure MongoDB is connected before any request (works for both local + serverless)
+// Ensure MongoDB is connected before any request
 let dbReady = null;
 async function ensureDB() {
   if (!dbReady) {

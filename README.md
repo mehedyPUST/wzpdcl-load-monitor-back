@@ -1,37 +1,25 @@
 # WZPDCL Load Monitor – Backend
 
-Express + MongoDB Atlas API.
-
-## Local development
-
+## Local
 ```bash
 cp .env.example .env
-# edit .env with your values
+# edit .env
 npm install
 npm run dev
 ```
 
-## Deploy on Vercel
+## Vercel Environment Variables
+| Name | Value |
+|------|-------|
+| MONGO_URI | your Atlas connection string |
+| DB_NAME | wzpdcl-load-monitor |
+| JWT_SECRET | long random string |
+| CLIENT_ORIGIN | https://your-frontend.vercel.app |
+| NODE_ENV | production |
+| TZ | Asia/Dhaka |
 
-1. Push this folder to a GitHub repo (or import the folder in Vercel).
-2. In Vercel project settings → Environment Variables, add:
-
-| Name           | Value                                      |
-|----------------|--------------------------------------------|
-| MONGO_URI      | your MongoDB Atlas connection string       |
-| DB_NAME        | wzpdcl                                     |
-| JWT_SECRET     | long random string                         |
-| CLIENT_ORIGIN  | https://your-frontend.vercel.app           |
-| NODE_ENV       | production                                 |
-| TZ             | Asia/Dhaka                                 |
-
-3. Deploy. The API will be available at `https://your-backend.vercel.app`.
-
-## Deploy on Railway / Render (recommended alternative)
-
-Just set the same environment variables and use the start command:
-`node src/app.js`
-
-## Health check
-
-`GET /health`
+## Seed production DB
+```bash
+# set MONGO_URI + DB_NAME in local .env to Atlas values
+npm run seed
+```
