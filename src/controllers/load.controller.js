@@ -606,12 +606,16 @@ export async function history(req, res) {
 }
 
 // ---------- GET /load/reports ----------
+// scope: circle | substation | all
+// period: daily | weekly | monthly
 export async function reports(req, res) {
     try {
         const { scope = 'circle', id, period = 'daily', date } = req.query;
 
-        if (!id || !ObjectId.isValid(id)) {
-            return res.status(400).json({ error: 'Valid id required' });
+        if (scope !== 'all') {
+            if (!id || !ObjectId.isValid(id)) {
+                return res.status(400).json({ error: 'Valid id required' });
+            }
         }
 
         const anchor = date || dhakaDateString();
@@ -640,7 +644,15 @@ export async function reports(req, res) {
         let ssIds = [];
         let label = '';
 
-        if (scope === 'circle') {
+        if (scope === 'all') {
+            const subs = await db
+                .collection('substations')
+                .find({ active: true })
+                .project({ _id: 1 })
+                .toArray();
+            ssIds = subs.map((s) => s._id);
+            label = 'All circles (WZPDCL)';
+        } else if (scope === 'circle') {
             const subs = await db
                 .collection('substations')
                 .find({ circleId: new ObjectId(id), active: true })
@@ -687,23 +699,61 @@ export async function reports(req, res) {
             grouped[key].count += 1;
         }
 
-        const series = Object.entries(grouped).map(([key, v]) => ({
-            key,
-            label: period === 'daily' ? key.split('T')[1] : key,
-            actualLoad: +v.actualLoad.toFixed(2),
-            pgcbAllotment: +v.pgcbAllotment.toFixed(2),
-            loadshed: +v.loadshed.toFixed(2),
-            pbsLoad: +v.pbsLoad.toFixed(2),
-            pbsAllotment: +v.pbsAllotment.toFixed(2),
-            pbsLoadshed: +v.pbsLoadshed.toFixed(2),
-        }));
+        const series = Object.entries(grouped)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([key, v]) => {
+                const actualLoad = +v.actualLoad.toFixed(2);
+                const pgcbAllotment = +v.pgcbAllotment.toFixed(2);
+                const loadshed = +v.loadshed.toFixed(2);
+                const demand = +(actualLoad + loadshed).toFixed(2);
+                return {
+                    key,
+                    label: period === 'daily' ? (key.split('T')[1] || key) : key,
+                    actualLoad,
+                    pgcbAllotment,
+                    loadshed,
+                    demand,
+                    pbsLoad: +v.pbsLoad.toFixed(2),
+                    pbsAllotment: +v.pbsAllotment.toFixed(2),
+                    pbsLoadshed: +v.pbsLoadshed.toFixed(2),
+                    count: v.count,
+                };
+            });
 
-        res.json({ scope, id, label, period, from, to, series });
+        const totals = series.reduce(
+            (a, s) => {
+                a.actualLoad += s.actualLoad;
+                a.pgcbAllotment += s.pgcbAllotment;
+                a.loadshed += s.loadshed;
+                a.demand += s.demand;
+                a.pbsLoad += s.pbsLoad;
+                return a;
+            },
+            { actualLoad: 0, pgcbAllotment: 0, loadshed: 0, demand: 0, pbsLoad: 0 }
+        );
+
+        res.json({
+            scope,
+            id: id || null,
+            label,
+            period,
+            from,
+            to,
+            series,
+            totals: {
+                actualLoad: +totals.actualLoad.toFixed(2),
+                pgcbAllotment: +totals.pgcbAllotment.toFixed(2),
+                loadshed: +totals.loadshed.toFixed(2),
+                demand: +totals.demand.toFixed(2),
+                pbsLoad: +totals.pbsLoad.toFixed(2),
+            },
+        });
     } catch (err) {
         console.error('reports error:', err);
         res.status(500).json({ error: 'Failed to generate report' });
     }
 }
+
 // ---------- GET /load/day-summary?date=YYYY-MM-DD ----------
 // Full day matrix for download (all circles / all SS / all slots)
 export async function daySummary(req, res) {
