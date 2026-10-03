@@ -358,58 +358,149 @@ export async function circleTotal(req, res) {
 }
 
 // ---------- GET /load/current-status ----------
+// Optional query: slotKey=YYYY-MM-DDTHH:MM  (defaults to current slot)
 export async function currentStatus(req, res) {
     try {
         const db = getDB();
-        const slotKey = currentSlotKey();
+        const requested = req.query.slotKey;
+        const dateQ = req.query.date;
+        const liveKey = currentSlotKey();
+        const today = dhakaDateString();
+        const parsedReq = requested && parseSlotKey(requested) ? parseSlotKey(requested) : null;
+        const date =
+            parsedReq?.date ||
+            (typeof dateQ === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateQ) ? dateQ : today);
+
+        let slotKey;
+        if (parsedReq) {
+            slotKey = requested;
+        } else if (date === today && liveKey) {
+            slotKey = liveKey;
+        } else {
+            slotKey = `${date}T00:00`;
+        }
+        const window = slotKey ? slotWindow(slotKey) : null;
+        const parsed = slotKey ? parseSlotKey(slotKey) : null;
+
         const circles = await db.collection('circles').find().sort({ name: 1 }).toArray();
+        // Include all substations (active preferred; inactive still listed as inactive flag)
+        const allSubs = await db
+            .collection('substations')
+            .find({})
+            .sort({ name: 1 })
+            .toArray();
+
+        const activeSubs = allSubs.filter((s) => s.active !== false);
+        const ssIds = activeSubs.map((s) => s._id);
+        const entries = slotKey && ssIds.length
+            ? await db
+                .collection('loadEntries')
+                .find({ substationId: { $in: ssIds }, slotKey })
+                .toArray()
+            : [];
+
+        const entryBySS = {};
+        for (const e of entries) entryBySS[e.substationId.toString()] = e;
 
         const result = [];
+        const grand = {
+            actualLoad: 0,
+            pgcbAllotment: 0,
+            loadshed: 0,
+            pbsLoad: 0,
+            pbsAllotment: 0,
+            pbsLoadshed: 0,
+            submitted: 0,
+            pending: 0,
+            totalSubstations: 0,
+        };
+
         for (const c of circles) {
-            const subs = await db
-                .collection('substations')
-                .find({ circleId: c._id, active: true })
-                .project({ _id: 1 })
-                .toArray();
+            const cid = c._id.toString();
+            // Robust circleId match (ObjectId or string)
+            const subs = activeSubs.filter((s) => {
+                const sc = s.circleId;
+                if (!sc) return false;
+                return sc.toString() === cid;
+            });
+            const substations = [];
+            const totals = {
+                actualLoad: 0,
+                pgcbAllotment: 0,
+                loadshed: 0,
+                pbsLoad: 0,
+                pbsAllotment: 0,
+                pbsLoadshed: 0,
+            };
+            let submitted = 0;
 
-            const ssIds = subs.map((s) => s._id);
-            const entries = slotKey
-                ? await db
-                    .collection('loadEntries')
-                    .find({ substationId: { $in: ssIds }, slotKey })
-                    .toArray()
-                : [];
-
-            const totals = entries.reduce(
-                (a, e) => {
-                    a.actualLoad += Number(e.actualLoad) || 0;
-                    a.pgcbAllotment += Number(e.pgcbAllotment) || 0;
-                    a.loadshed += Number(e.loadshed) || 0;
-                    a.pbsLoad += Number(e.pbsLoad) || 0;
-                    a.pbsAllotment += Number(e.pbsAllotment) || 0;
-                    a.pbsLoadshed += Number(e.pbsLoadshed) || 0;
-                    return a;
-                },
-                {
-                    actualLoad: 0,
-                    pgcbAllotment: 0,
-                    loadshed: 0,
-                    pbsLoad: 0,
-                    pbsAllotment: 0,
-                    pbsLoadshed: 0,
+            for (const ss of subs) {
+                const e = entryBySS[ss._id.toString()] || null;
+                const has = Boolean(e);
+                if (has) {
+                    submitted += 1;
+                    totals.actualLoad += Number(e.actualLoad) || 0;
+                    totals.pgcbAllotment += Number(e.pgcbAllotment) || 0;
+                    totals.loadshed += Number(e.loadshed) || 0;
+                    totals.pbsLoad += Number(e.pbsLoad) || 0;
+                    totals.pbsAllotment += Number(e.pbsAllotment) || 0;
+                    totals.pbsLoadshed += Number(e.pbsLoadshed) || 0;
                 }
-            );
+                substations.push({
+                    substationId: ss._id.toString(),
+                    substationName: ss.name,
+                    district: ss.district || '',
+                    submitted: has,
+                    actualLoad: has ? Number(e.actualLoad) || 0 : null,
+                    pgcbAllotment: has ? Number(e.pgcbAllotment) || 0 : null,
+                    loadshed: has ? Number(e.loadshed) || 0 : null,
+                    pbsLoad: has ? Number(e.pbsLoad) || 0 : null,
+                    note: has ? (e.note || '') : '',
+                    updatedAt: has ? (e.updatedAt || e.createdAt) : null,
+                });
+            }
+
+            const pending = subs.length - submitted;
+            grand.actualLoad += totals.actualLoad;
+            grand.pgcbAllotment += totals.pgcbAllotment;
+            grand.loadshed += totals.loadshed;
+            grand.pbsLoad += totals.pbsLoad;
+            grand.pbsAllotment += totals.pbsAllotment;
+            grand.pbsLoadshed += totals.pbsLoadshed;
+            grand.submitted += submitted;
+            grand.pending += pending;
+            grand.totalSubstations += subs.length;
 
             result.push({
-                circleId: c._id.toString(),
+                circleId: cid,
                 circleName: c.name,
-                totalSubstations: ssIds.length,
-                submitted: entries.length,
+                totalSubstations: subs.length,
+                submitted,
+                pending,
                 totals,
+                substations,
             });
         }
 
-        res.json({ slotKey, circles: result });
+        const todaySlots = slotsForDate(date).map((s) => ({
+            slotKey: s.slotKey,
+            label: s.label,
+            isSpecial: s.isSpecial,
+            isCurrent: s.slotKey === liveKey,
+        }));
+
+        res.json({
+            slotKey,
+            liveSlotKey: liveKey,
+            date,
+            label: parsed ? `${String(parsed.hour).padStart(2, '0')}:${String(parsed.minute).padStart(2, '0')}` : null,
+            isLive: Boolean(slotKey && slotKey === liveKey),
+            opensAt: window?.opensAt || null,
+            closesAt: window?.closesAt || null,
+            slots: todaySlots,
+            totals: grand,
+            circles: result,
+        });
     } catch (err) {
         console.error('currentStatus error:', err);
         res.status(500).json({ error: 'Failed to load status' });

@@ -1,7 +1,20 @@
 import { verifyToken, COOKIE_NAME } from '../utils/jwt.js';
 
+function extractToken(req) {
+    // 1) Authorization: Bearer <token>
+    const hdr = req.headers?.authorization || req.headers?.Authorization;
+    if (hdr && typeof hdr === 'string' && hdr.toLowerCase().startsWith('bearer ')) {
+        return hdr.slice(7).trim();
+    }
+    // 2) HTTP-only cookie
+    if (req.cookies?.[COOKIE_NAME]) return req.cookies[COOKIE_NAME];
+    // 3) Optional fallback header (useful behind some proxies)
+    if (req.headers?.['x-access-token']) return String(req.headers['x-access-token']);
+    return null;
+}
+
 export function requireAuth(req, res, next) {
-    const token = req.cookies?.[COOKIE_NAME];
+    const token = extractToken(req);
     if (!token) return res.status(401).json({ error: 'Not authenticated' });
 
     const payload = verifyToken(token);

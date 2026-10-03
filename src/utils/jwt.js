@@ -22,16 +22,17 @@ export function verifyToken(token) {
 
 export const COOKIE_NAME = 'wzpdcl_token';
 
-// Detect production reliably (Vercel sets VERCEL=1)
 const isProd =
   process.env.NODE_ENV === 'production' ||
   process.env.VERCEL === '1' ||
   process.env.VERCEL === 'true';
 
+// sameSite=lax works with Next.js same-origin rewrites.
+// sameSite=none kept available if CLIENT_ORIGIN forces true cross-site.
 export const COOKIE_OPTIONS = {
   httpOnly: true,
-  secure: isProd,                          // required for HTTPS
-  sameSite: isProd ? 'none' : 'lax',       // none required for cross-origin
-  maxAge: 7 * 24 * 60 * 60 * 1000,         // 7 days
+  secure: isProd,
+  sameSite: isProd ? 'lax' : 'lax',
+  maxAge: 7 * 24 * 60 * 60 * 1000,
   path: '/',
 };

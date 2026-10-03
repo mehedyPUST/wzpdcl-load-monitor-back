@@ -38,6 +38,7 @@ export async function operatorLogin(req, res) {
         res.cookie(COOKIE_NAME, token, COOKIE_OPTIONS);
         return res.json({
             message: 'Logged in',
+            token,
             user: {
                 role: 'operator',
                 userId: user._id.toString(),
@@ -78,6 +79,7 @@ export async function viewerLogin(req, res) {
         res.cookie(COOKIE_NAME, token, COOKIE_OPTIONS);
         return res.json({
             message: 'Logged in',
+            token,
             user: { role: 'viewer', userId: user._id.toString(), name: user.name, email: user.email },
         });
     } catch (err) {
@@ -112,6 +114,7 @@ export async function adminLogin(req, res) {
         res.cookie(COOKIE_NAME, token, COOKIE_OPTIONS);
         return res.json({
             message: 'Logged in',
+            token,
             user: { role: 'admin', userId: user._id.toString(), name: user.name, email: user.email },
         });
     } catch (err) {

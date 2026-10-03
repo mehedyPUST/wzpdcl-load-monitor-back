@@ -1,6 +1,6 @@
 // 26 slots per day:
 //   - 24 standard hourly: 00:00 → 23:00 (all hours)
-//   - 2 special half-hour: 18:30 and 19:30
+//   - 2 special half-hour: 17:30 and 18:30
 // Timezone: Asia/Dhaka (UTC+6, no DST)
 
 const TZ_OFFSET_MIN = 6 * 60;
@@ -49,16 +49,16 @@ export function slotsForDate(dateStr) {
 
     // 2 special half-hour slots
     slots.push({
-        label: '18:30',
-        slotKey: `${dateStr}T18:30`,
-        hour: 18,
+        label: '17:30',
+        slotKey: `${dateStr}T17:30`,
+        hour: 17,
         minute: 30,
         isSpecial: true,
     });
     slots.push({
-        label: '19:30',
-        slotKey: `${dateStr}T19:30`,
-        hour: 19,
+        label: '18:30',
+        slotKey: `${dateStr}T18:30`,
+        hour: 18,
         minute: 30,
         isSpecial: true,
     });
