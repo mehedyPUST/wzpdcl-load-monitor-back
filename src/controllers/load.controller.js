@@ -704,3 +704,247 @@ export async function reports(req, res) {
         res.status(500).json({ error: 'Failed to generate report' });
     }
 }
+// ---------- GET /load/day-summary?date=YYYY-MM-DD ----------
+// Full day matrix for download (all circles / all SS / all slots)
+export async function daySummary(req, res) {
+    try {
+        const date = req.query.date || dhakaDateString();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+            return res.status(400).json({ error: 'Invalid date' });
+        }
+
+        const db = getDB();
+        const circles = await db.collection('circles').find().sort({ name: 1 }).toArray();
+        const circleById = {};
+        for (const c of circles) circleById[c._id.toString()] = c;
+
+        const substations = await db
+            .collection('substations')
+            .find({ active: true })
+            .sort({ name: 1 })
+            .toArray();
+
+        const ssIds = substations.map((s) => s._id);
+        const entries = await db
+            .collection('loadEntries')
+            .find({ slotDate: date, substationId: { $in: ssIds } })
+            .toArray();
+
+        const entryMap = {};
+        for (const e of entries) {
+            entryMap[`${e.substationId.toString()}|${e.slotKey}`] = e;
+        }
+
+        const slots = slotsForDate(date);
+        const rows = [];
+        let sn = 0;
+
+        // Sort SS by circle name then name
+        const ordered = [...substations].sort((a, b) => {
+            const ca = (circleById[a.circleId?.toString()]?.name || '').localeCompare(
+                circleById[b.circleId?.toString()]?.name || ''
+            );
+            if (ca !== 0) return ca;
+            return (a.name || '').localeCompare(b.name || '');
+        });
+
+        for (const ss of ordered) {
+            const c = circleById[ss.circleId?.toString()];
+            for (const slot of slots) {
+                const e = entryMap[`${ss._id.toString()}|${slot.slotKey}`];
+                const actual = e ? Number(e.actualLoad) || 0 : null;
+                const allot = e ? Number(e.pgcbAllotment) || 0 : null;
+                const ls = e ? Number(e.loadshed) || 0 : null;
+                const demand =
+                    actual !== null || ls !== null
+                        ? (Number(actual) || 0) + (Number(ls) || 0)
+                        : null;
+                sn += 1;
+                rows.push({
+                    sn,
+                    date,
+                    slotKey: slot.slotKey,
+                    slotLabel: slot.label,
+                    isSpecial: slot.isSpecial,
+                    circleId: ss.circleId?.toString() || '',
+                    circleName: c?.name || '',
+                    substationId: ss._id.toString(),
+                    substationName: ss.name,
+                    district: ss.district || '',
+                    submitted: Boolean(e),
+                    actualLoad: actual,
+                    pgcbAllotment: allot,
+                    loadshed: ls,
+                    demand,
+                    pbsLoad: e ? Number(e.pbsLoad) || 0 : null,
+                    note: e?.note || '',
+                });
+            }
+        }
+
+        // Hourly totals across all SS
+        const bySlot = {};
+        for (const r of rows) {
+            if (!r.submitted) continue;
+            if (!bySlot[r.slotKey]) {
+                bySlot[r.slotKey] = {
+                    slotKey: r.slotKey,
+                    slotLabel: r.slotLabel,
+                    actualLoad: 0,
+                    pgcbAllotment: 0,
+                    loadshed: 0,
+                    demand: 0,
+                    pbsLoad: 0,
+                    submitted: 0,
+                };
+            }
+            bySlot[r.slotKey].actualLoad += Number(r.actualLoad) || 0;
+            bySlot[r.slotKey].pgcbAllotment += Number(r.pgcbAllotment) || 0;
+            bySlot[r.slotKey].loadshed += Number(r.loadshed) || 0;
+            bySlot[r.slotKey].demand += Number(r.demand) || 0;
+            bySlot[r.slotKey].pbsLoad += Number(r.pbsLoad) || 0;
+            bySlot[r.slotKey].submitted += 1;
+        }
+
+        const hourly = slots.map((s) => {
+            const t = bySlot[s.slotKey] || {
+                slotKey: s.slotKey,
+                slotLabel: s.label,
+                actualLoad: 0,
+                pgcbAllotment: 0,
+                loadshed: 0,
+                demand: 0,
+                pbsLoad: 0,
+                submitted: 0,
+            };
+            return {
+                ...t,
+                isSpecial: s.isSpecial,
+                totalSubstations: ordered.length,
+            };
+        });
+
+        const dayTotals = hourly.reduce(
+            (a, h) => {
+                a.actualLoad += h.actualLoad;
+                a.pgcbAllotment += h.pgcbAllotment;
+                a.loadshed += h.loadshed;
+                a.demand += h.demand;
+                a.pbsLoad += h.pbsLoad;
+                return a;
+            },
+            { actualLoad: 0, pgcbAllotment: 0, loadshed: 0, demand: 0, pbsLoad: 0 }
+        );
+
+        res.json({
+            date,
+            totalSubstations: ordered.length,
+            totalSlots: slots.length,
+            dayTotals,
+            hourly,
+            rows,
+        });
+    } catch (err) {
+        console.error('daySummary error:', err);
+        res.status(500).json({ error: 'Failed to load day summary' });
+    }
+}
+
+// ---------- POST /load/submit-bulk ----------
+export async function submitBulk(req, res) {
+    try {
+        await ensureIndexes();
+        const { slotKey, entries } = req.body;
+        if (!slotKey || !Array.isArray(entries) || entries.length === 0) {
+            return res.status(400).json({ error: 'slotKey and entries[] required' });
+        }
+        if (!parseSlotKey(slotKey)) {
+            return res.status(400).json({ error: 'Invalid slotKey' });
+        }
+
+        const role = req.user.role;
+        if (role === 'operator') {
+            const can = await isSlotEditableForOperator(slotKey);
+            if (!can) {
+                return res.status(409).json({ error: 'Slot is not editable right now' });
+            }
+        } else if (role !== 'admin') {
+            return res.status(403).json({ error: 'Not allowed' });
+        }
+
+        const db = getDB();
+        const now = new Date();
+        const toNum = (v) => {
+            if (v === '' || v === null || v === undefined) return null;
+            const n = Number(v);
+            return Number.isFinite(n) ? n : null;
+        };
+
+        let saved = 0;
+        const errors = [];
+
+        for (const item of entries) {
+            try {
+                const substationId = item.substationId;
+                if (!substationId || !ObjectId.isValid(substationId)) {
+                    errors.push({ substationId, error: 'Invalid id' });
+                    continue;
+                }
+                if (role === 'operator' && req.user.substationId !== substationId) {
+                    errors.push({ substationId, error: 'Not your substation' });
+                    continue;
+                }
+
+                const ssId = new ObjectId(substationId);
+                const ss = await db.collection('substations').findOne({ _id: ssId });
+                if (!ss) {
+                    errors.push({ substationId, error: 'SS not found' });
+                    continue;
+                }
+
+                const update = {
+                    circleId: ss.circleId,
+                    substationId: ssId,
+                    slotKey,
+                    slotDate: slotKey.slice(0, 10),
+                    actualLoad: toNum(item.actualLoad),
+                    pgcbAllotment: toNum(item.pgcbAllotment),
+                    loadshed: toNum(item.loadshed),
+                    pbsLoad: toNum(item.pbsLoad),
+                    pbsAllotment: toNum(item.pbsAllotment),
+                    pbsLoadshed: toNum(item.pbsLoadshed),
+                    note: item.note || '',
+                    updatedAt: now,
+                    lastEditedBy: new ObjectId(req.user.userId),
+                    editedByRole: role,
+                };
+
+                const existing = await db
+                    .collection('loadEntries')
+                    .findOne({ substationId: ssId, slotKey });
+
+                if (existing) {
+                    await db.collection('loadEntries').updateOne(
+                        { _id: existing._id },
+                        { $set: update }
+                    );
+                } else {
+                    await db.collection('loadEntries').insertOne({
+                        ...update,
+                        createdAt: now,
+                        enteredBy: new ObjectId(req.user.userId),
+                        editHistory: [],
+                    });
+                }
+                saved += 1;
+            } catch (e) {
+                errors.push({ substationId: item.substationId, error: e.message });
+            }
+        }
+
+        res.json({ message: 'Bulk save complete', saved, failed: errors.length, errors });
+    } catch (err) {
+        console.error('submitBulk error:', err);
+        res.status(500).json({ error: 'Bulk save failed' });
+    }
+}
