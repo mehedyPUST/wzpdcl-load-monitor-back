@@ -82,10 +82,8 @@ export async function getForm(req, res) {
             mySubstationId = req.user.substationId;
             canEdit = await isSlotEditableForOperator(slotKey);
         } else if (role === 'admin') {
-            circleId = req.query.circleId;
-            if (!circleId || !ObjectId.isValid(circleId)) {
-                return res.status(400).json({ error: 'circleId required for admin' });
-            }
+            // circleId optional: omit or "all" → every circle / every SS
+            circleId = req.query.circleId || 'all';
             canEdit = true;
         } else if (role === 'viewer') {
             circleId = req.query.circleId;
@@ -97,15 +95,37 @@ export async function getForm(req, res) {
             return res.status(403).json({ error: 'Not allowed' });
         }
 
-        const circleObj = new ObjectId(circleId);
-        const circle = await db.collection('circles').findOne({ _id: circleObj });
-        if (!circle) return res.status(404).json({ error: 'Circle not found' });
+        const allCircles = await db.collection('circles').find().sort({ name: 1 }).toArray();
+        const circleById = {};
+        for (const c of allCircles) circleById[c._id.toString()] = c;
 
+        let targetCircles = [];
+        if (role === 'admin' && (circleId === 'all' || circleId === '')) {
+            targetCircles = allCircles;
+        } else {
+            if (!ObjectId.isValid(circleId)) {
+                return res.status(400).json({ error: 'Invalid circleId' });
+            }
+            const c = circleById[circleId] || await db.collection('circles').findOne({ _id: new ObjectId(circleId) });
+            if (!c) return res.status(404).json({ error: 'Circle not found' });
+            targetCircles = [c];
+        }
+
+        const circleIds = targetCircles.map((c) => c._id);
         const substations = await db
             .collection('substations')
-            .find({ circleId: circleObj, active: true })
+            .find({ circleId: { $in: circleIds }, active: true })
             .sort({ name: 1 })
             .toArray();
+
+        // Order SS by circle name then SS name
+        substations.sort((a, b) => {
+            const ca = (circleById[a.circleId.toString()]?.name || '').localeCompare(
+                circleById[b.circleId.toString()]?.name || ''
+            );
+            if (ca !== 0) return ca;
+            return (a.name || '').localeCompare(b.name || '');
+        });
 
         const ssIds = substations.map((s) => s._id);
         const entries = await db
@@ -120,11 +140,14 @@ export async function getForm(req, res) {
             const e = entryBySS[ss._id.toString()];
             const isMine = role === 'operator' && ss._id.toString() === mySubstationId;
             const editable = (isMine && canEdit) || (role === 'admin' && canEdit);
+            const c = circleById[ss.circleId.toString()];
 
             return {
                 substationId: ss._id.toString(),
                 substationName: ss.name,
                 district: ss.district || '',
+                circleId: ss.circleId.toString(),
+                circleName: c?.name || '',
                 editable,
                 isMine,
                 entry: e
@@ -169,8 +192,16 @@ export async function getForm(req, res) {
         const parsed = parseSlotKey(slotKey);
         const window = slotWindow(slotKey);
 
+        const primary = targetCircles[0];
         res.json({
-            circle: { _id: circle._id.toString(), name: circle.name },
+            circle: primary
+                ? { _id: primary._id.toString(), name: primary.name }
+                : null,
+            circles: targetCircles.map((c) => ({
+                _id: c._id.toString(),
+                name: c.name,
+            })),
+            multiCircle: targetCircles.length > 1,
             slotKey,
             window,
             editable: canEdit,
