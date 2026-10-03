@@ -64,7 +64,7 @@ async function seed() {
         console.log(`   - ${ssList[i].name} → ${id}`);
     });
 
-    // ---- Operator (Bottail) ----
+    // ---- SBA (Bottail) ----
     const bottailId = ssRes.insertedIds[0];
     await db.collection('users').insertOne({
         role: 'operator',

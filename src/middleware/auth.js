@@ -13,7 +13,7 @@ export function requireAuth(req, res, next) {
 
 export function requireOperator(req, res, next) {
     if (req.user?.role !== 'operator') {
-        return res.status(403).json({ error: 'Operator access required' });
+        return res.status(403).json({ error: 'SBA access required' });
     }
     next();
 }
@@ -34,7 +34,7 @@ export function requireAdmin(req, res, next) {
 
 export function requireAdminOrOperator(req, res, next) {
     if (!['admin', 'operator'].includes(req.user?.role)) {
-        return res.status(403).json({ error: 'Admin or operator access required' });
+        return res.status(403).json({ error: 'Admin or SBA access required' });
     }
     next();
 }
